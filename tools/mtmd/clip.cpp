@@ -212,6 +212,9 @@ struct clip_layer {
     ggml_tensor * v_w = nullptr;
     ggml_tensor * v_b = nullptr;
 
+    ggml_tensor * rel_h = nullptr;
+    ggml_tensor * rel_w = nullptr;
+
     ggml_tensor * o_w = nullptr;
     ggml_tensor * o_b = nullptr;
 
@@ -354,6 +357,18 @@ struct clip_model {
     ggml_tensor * conv1d_2_b = nullptr;
     ggml_tensor * mm_norm_pre_w = nullptr;
     ggml_tensor * mm_norm_mid_w = nullptr;
+
+    // got vary
+    ggml_tensor * neck_conv1_w = nullptr;
+    ggml_tensor * neck_conv2_w = nullptr;
+    ggml_tensor * neck_conv3_w = nullptr;
+    ggml_tensor * neck_conv4_w = nullptr;
+    ggml_tensor * neck_norm1_w = nullptr;
+    ggml_tensor * neck_norm1_b = nullptr;
+    ggml_tensor * neck_norm2_w = nullptr;
+    ggml_tensor * neck_norm2_b = nullptr;
+    ggml_tensor * proj_lin_w = nullptr;
+    ggml_tensor * proj_lin_b = nullptr;
 };
 
 struct clip_ctx {
@@ -801,6 +816,149 @@ struct clip_graph {
         ggml_build_forward_expand(gf, embeddings);
 
         return gf;
+    }
+
+    ggml_cgraph * build_got_vary() {
+        GGML_ASSERT(model.class_embedding == nullptr);
+        GGML_ASSERT(hparams.n_wa_pattern > 0);
+        constexpr int GOT_VARY_WIN_SIZE = 14;
+
+        const int batch_size       = 1;
+        // const bool use_window_attn = hparams.n_wa_pattern > 0;
+        const int n_wa_pattern     = hparams.n_wa_pattern;
+        const int n_pos            = n_patches;
+        const int num_position_ids = n_pos; // m-rope requires 4 dim per position
+        // const int num_position_ids = n_pos * 4; // m-rope requires 4 dim per position
+
+        norm_type norm_t = NORM_TYPE_NORMAL;
+
+        // int mrope_sections[4] = {d_head/4, d_head/4, d_head/4, d_head/4};
+
+        ggml_tensor * inp_raw = build_inp_raw();
+        ggml_tensor * inp = ggml_conv_2d(ctx0, model.patch_embeddings_0, inp_raw, patch_size, patch_size, 0, 0, 1, 1);
+        inp = ggml_add(ctx0, inp, ggml_repeat(ctx0,model.patch_bias,inp));
+
+        GGML_ASSERT(img.nx % (patch_size * 2) == 0);
+        GGML_ASSERT(img.ny % (patch_size * 2) == 0);
+        // B C H W -> B H W C
+        inp = ggml_permute(ctx0,inp,1,2,0,3);
+        inp = ggml_cont(ctx0,inp);
+
+        inp = ggml_add_inplace(ctx0,inp,model.position_embeddings);
+
+        ggml_tensor * inpL           = inp;
+        ggml_tensor * window_mask    = nullptr;
+        ggml_tensor * window_idx     = nullptr;
+        ggml_tensor * inv_window_idx = nullptr;
+
+        ggml_tensor * positions = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, num_position_ids);
+        ggml_set_name(positions, "positions");
+        ggml_set_input(positions);
+
+
+        // loop over layers
+        for (int il = 0; il < n_layer; il++) {
+            auto & layer = model.layers[il];
+            const bool full_attn = (il + 1) % n_wa_pattern == 0;
+
+            ggml_tensor * cur = inpL; // inpL = residual, cur = hidden_states
+
+            // layernorm1
+            cur = build_norm(cur, layer.ln_1_w, layer.ln_1_b, norm_t, eps, il);
+            cb(cur, "ln1", il);
+
+            if (!full_attn) {
+                cur = ggml_win_part(ctx0,cur,GOT_VARY_WIN_SIZE);
+            }
+
+            // self-attention
+            {
+                ggml_tensor * Qcur = ggml_add(ctx0,
+                    ggml_mul_mat(ctx0, layer.q_w, cur), layer.q_b);
+                ggml_tensor * Kcur = ggml_add(ctx0,
+                    ggml_mul_mat(ctx0, layer.k_w, cur), layer.k_b);
+                ggml_tensor * Vcur = ggml_add(ctx0,
+                    ggml_mul_mat(ctx0, layer.v_w, cur), layer.v_b);
+
+                Qcur = ggml_reshape_3d(ctx0, Qcur, d_head, n_head, n_patches);
+                Kcur = ggml_reshape_3d(ctx0, Kcur, d_head, n_head, n_patches);
+                Vcur = ggml_reshape_3d(ctx0, Vcur, d_head, n_head, n_patches);
+
+                cb(Qcur, "Qcur", il);
+                cb(Kcur, "Kcur", il);
+                cb(Vcur, "Vcur", il);
+
+
+                ggml_tensor * attn_mask = nullptr;
+
+                cur = build_attn(layer.o_w, layer.o_b,
+                    Qcur, Kcur, Vcur, attn_mask, kq_scale, il);
+                cb(cur, "attn_out", il);
+            }
+
+            // re-add the layer input, e.g., residual
+            cur = ggml_add(ctx0, cur, inpL);
+
+            inpL = cur; // inpL = residual, cur = hidden_states
+
+            cb(cur, "ffn_inp", il);
+
+            // layernorm2
+            cur = build_norm(cur, layer.ln_2_w, layer.ln_2_b, norm_t, eps, il);
+            cb(cur, "ffn_inp_normed", il);
+
+            // ffn
+            cur = build_ffn(cur,
+                layer.ff_up_w, layer.ff_up_b,
+                layer.ff_gate_w, layer.ff_gate_b,
+                layer.ff_down_w, layer.ff_down_b,
+                hparams.ffn_op, il);
+
+            cb(cur, "ffn_out", il);
+
+            // residual 2
+            cur = ggml_add(ctx0, inpL, cur);
+            cb(cur, "layer_out", il);
+
+            inpL = cur;
+        }
+
+        // post-layernorm
+        if (model.post_ln_w) {
+            inpL = build_norm(inpL, model.post_ln_w, model.post_ln_b, norm_t, eps, n_layer);
+        }
+
+        // multimodal projection
+        ggml_tensor * embeddings = inpL;
+        embeddings = ggml_reshape_3d(ctx0, embeddings, n_embd * 4, n_pos / 4, batch_size);
+
+        embeddings = ggml_mul_mat(ctx0, model.mm_0_w, embeddings);
+        embeddings = ggml_add(ctx0, embeddings, model.mm_0_b);
+
+        // GELU activation
+        embeddings = ggml_gelu(ctx0, embeddings);
+
+        // Second linear layer
+        embeddings = ggml_mul_mat(ctx0, model.mm_1_w, embeddings);
+        embeddings = ggml_add(ctx0, embeddings, model.mm_1_b);
+
+        // if (use_window_attn) {
+        //     window_idx = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_pos / 4);
+        //     ggml_set_name(window_idx, "window_idx");
+        //     ggml_set_input(window_idx);
+        //
+        //     // embeddings shape: [n_embd, n_patches_x * n_patches_y, batch_size]
+        //     GGML_ASSERT(batch_size == 1);
+        //     embeddings = ggml_reshape_2d(ctx0, embeddings, hparams.projection_dim, n_patches_x * n_patches_y / 4);
+        //     embeddings = ggml_get_rows(ctx0, embeddings, window_idx);
+        //     embeddings = ggml_reshape_3d(ctx0, embeddings, hparams.projection_dim, n_patches_x * n_patches_y / 4, batch_size);
+        // }
+
+        // build the graph
+        ggml_build_forward_expand(gf, embeddings);
+
+        return gf;
+
     }
 
     ggml_cgraph * build_minicpmv() {
@@ -1687,6 +1845,7 @@ private:
         return inpL;
     }
 
+
     // build the input after conv2d (inp_raw --> patches)
     // returns tensor with shape [n_embd, n_patches]
     ggml_tensor * build_inp() {
@@ -1847,6 +2006,66 @@ private:
             // const auto n_kv     = k->ne[1]; // for flash attention
 
             ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
+            // F32 may not needed for vision encoders?
+            // ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+
+            kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, 0.0f);
+
+            ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
+            cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
+            cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*n_head, n_tokens);
+        }
+
+        cb(cur, "kqv_out", il);
+
+        if (wo) {
+            cur = ggml_mul_mat(ctx0, wo, cur);
+        }
+
+        if (wo_b) {
+            cur = ggml_add(ctx0, cur, wo_b);
+        }
+
+        return cur;
+    }
+
+    ggml_tensor * build_attn_for_got_vary(
+            ggml_tensor * wo,
+            ggml_tensor * wo_b,
+            ggml_tensor * q_cur,
+            ggml_tensor * k_cur,
+            ggml_tensor * v_cur,
+            ggml_tensor * kq_b,
+            ggml_tensor * kq_mask,
+            float kq_scale,
+            int il) const {
+        // these nodes are added to the graph together so that they are not reordered
+        // by doing so, the number of splits in the graph is reduced
+        ggml_build_forward_expand(gf, q_cur);
+        ggml_build_forward_expand(gf, k_cur);
+        ggml_build_forward_expand(gf, v_cur);
+
+
+        ggml_tensor * q = ggml_permute(ctx0, q_cur, 0, 2, 1, 3);
+        //cb(q, "q", il);
+
+        ggml_tensor * k = ggml_permute(ctx0, k_cur, 0, 2, 1, 3);
+        //cb(k, "k", il);
+
+        ggml_tensor * v = ggml_permute(ctx0, v_cur, 1, 2, 0, 3);
+        v = ggml_cont(ctx0, v);
+        //cb(k, "v", il);
+
+        ggml_tensor * cur;
+
+        // TODO @ngxson : support flash attention
+        {
+            const auto n_tokens = q->ne[1];
+            const auto n_head   = q->ne[2];
+            // const auto n_kv     = k->ne[1]; // for flash attention
+
+            ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
+            kq = ggml_add_inplace(ctx0,kq,kq_b);
             // F32 may not needed for vision encoders?
             // ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
 
@@ -2349,6 +2568,8 @@ struct clip_model_loader {
             layer.o_w    = get_tensor(string_format(TN_ATTN_OUTPUT, prefix, il, "weight"));
             layer.k_norm = get_tensor(string_format(TN_ATTN_K_NORM, prefix, il, "weight"), false);
             layer.q_norm = get_tensor(string_format(TN_ATTN_Q_NORM, prefix, il, "weight"), false);
+            layer.rel_h  = get_tensor(string_format(TN_ATTN_RPOS_H, prefix, il), false);
+            layer.rel_w  = get_tensor(string_format(TN_ATTN_RPOS_W, prefix, il), false);
             layer.ln_1_w = get_tensor(string_format(TN_LN_1,        prefix, il, "weight"), false);
             layer.ln_2_w = get_tensor(string_format(TN_LN_2,        prefix, il, "weight"), false);
             layer.ls_1_w = get_tensor(string_format(TN_LS_1,        prefix, il, "weight"), false); // no bias
@@ -2544,6 +2765,19 @@ struct clip_model_loader {
                     model.mm_model_mlp_1_w = get_tensor(string_format(TN_MVLM_PROJ_MLP, 1, "weight"));
                     model.mm_model_mlp_2_w = get_tensor(string_format(TN_MVLM_PROJ_MLP, 2, "weight"));
                 } break;
+            case PROJECTOR_TYPE_GOTVARY:
+            {
+                model.neck_conv1_w = get_tensor(TN_NECK_CONV_1);
+                model.neck_conv2_w = get_tensor(TN_NECK_CONV_2);
+                model.neck_conv3_w = get_tensor(TN_NECK_CONV_3);
+                model.neck_conv4_w = get_tensor(TN_NECK_CONV_4);
+                model.neck_norm1_w = get_tensor(string_format(TN_NECK_NORM_1, "weight"));
+                model.neck_norm2_w = get_tensor(string_format(TN_NECK_NORM_2, "weight"));
+                model.neck_norm1_b = get_tensor(string_format(TN_NECK_NORM_1, "bias"));
+                model.neck_norm2_b = get_tensor(string_format(TN_NECK_NORM_2, "bias"));
+                model.proj_lin_w   = get_tensor(string_format(TN_PROJ_LIN, "weight"));
+                model.proj_lin_b   = get_tensor(string_format(TN_PROJ_LIN, "bias"));
+            } break;
             default:
                 GGML_ASSERT(false && "unknown projector type");
         }

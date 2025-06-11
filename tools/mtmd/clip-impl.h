@@ -54,13 +54,15 @@
 // tensor name constants
 //
 
-#define TN_POS_EMBD        "%s.position_embd.weight"
+#define TN_POS_EMBD        "%s.position_embd"  // remove weight subfix
 #define TN_CLASS_EMBD      "v.class_embd"
 #define TN_PATCH_EMBD      "v.patch_embd.weight"  // not rename tensor with ".0" postfix for backwrad compat
 #define TN_PATCH_EMBD_1    "v.patch_embd.weight.1"
 #define TN_PATCH_BIAS      "v.patch_embd.bias"
 #define TN_ATTN_K          "%s.blk.%d.attn_k.%s"
 #define TN_ATTN_Q          "%s.blk.%d.attn_q.%s"
+#define TN_ATTN_RPOS_W     "%s.blk.%d.attn_rel_pos_w" // got vary
+#define TN_ATTN_RPOS_H     "%s.blk.%d.attn_rel_pos_h" // got vary
 #define TN_ATTN_V          "%s.blk.%d.attn_v.%s"
 #define TN_ATTN_OUTPUT     "%s.blk.%d.attn_out.%s"
 #define TN_ATTN_K_NORM     "%s.blk.%d.attn_k_norm.%s"
@@ -111,6 +113,17 @@
 #define TN_MM_NORM_PRE  "mm.a.norm_pre.%s"
 #define TN_MM_NORM_MID  "mm.a.norm_mid.%s"
 
+// got vary
+#define TN_NECK_CONV_1   "v.neck_conv1.weight"
+#define TN_NECK_NORM_1   "v.neck_norm1.%s"
+#define TN_NECK_CONV_2   "v.neck_conv2.weight"
+#define TN_NECK_NORM_2   "v.neck_norm2.%s"
+#define TN_NECK_CONV_3   "v.neck_conv3.weight"
+#define TN_NECK_CONV_4   "v.neck_conv4.weight"
+#define TN_PROJ_LIN      "v.proj_l.%s"
+
+
+
 // align x to upper multiple of n
 #define CLIP_ALIGN(x, n) ((((x) + (n) - 1) / (n)) * (n))
 
@@ -131,6 +144,7 @@ enum projector_type {
     PROJECTOR_TYPE_LLAMA4,
     PROJECTOR_TYPE_QWEN2A,
     PROJECTOR_TYPE_QWEN25O, // will be replaced by QWEN2A or QWEN25VL depending on clip_ctx
+    PROJECTOR_TYPE_GOTVARY,
     PROJECTOR_TYPE_UNKNOWN,
 };
 
@@ -150,6 +164,7 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_LLAMA4,    "llama4"},
     { PROJECTOR_TYPE_QWEN2A,    "qwen2a"},
     { PROJECTOR_TYPE_QWEN25O,   "qwen2.5o"},
+    { PROJECTOR_TYPE_GOTVARY,   "gotvary"},
 };
 
 static projector_type clip_projector_type_from_string(const std::string & str) {
