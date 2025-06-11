@@ -3081,6 +3081,9 @@ struct ggml_tensor * ggml_cont_4d(
         int64_t               ne3) {
     GGML_ASSERT(ggml_nelements(a) == (ne0*ne1*ne2*ne3));
 
+
+
+
     struct ggml_tensor * result = ggml_new_tensor_4d(ctx, a->type, ne0, ne1, ne2, ne3);
     ggml_format_name(result, "%s (cont)", a->name);
 

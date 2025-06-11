@@ -269,6 +269,10 @@ struct mtmd_context {
             img_beg = "<img>";
             img_end = "</img>";
 
+        } else if (proj ==  PROJECTOR_TYPE_GOTVARY) {
+            // <|vision_start|> ... (image embeddings) ... (no end)
+            img_beg = "<|vision_start|>";
+            img_end.clear();
         }
     }
 
