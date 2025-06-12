@@ -2,7 +2,7 @@
 
 find_package(Threads REQUIRED)
 
-add_library(mtmd
+add_library(mtmd STATIC
             mtmd.cpp
             mtmd-audio.cpp
             mtmd.h

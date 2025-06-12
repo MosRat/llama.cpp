@@ -852,7 +852,6 @@ struct clip_graph {
                                               il);
                 cb(cur, "attn_out", il);
             }
-            fprintf(stderr, "res1:[%lld %lld %lld %lld]\n",cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
 
             if (!full_attn) {
                 cur = ggml_win_unpart(ctx0, cur, GOT_VARY_PATCH_SIZE, GOT_VARY_PATCH_SIZE, GOT_VARY_WIN_SIZE);
@@ -890,18 +889,15 @@ struct clip_graph {
         cur = ggml_conv_2d(ctx0, model.neck_conv3_w, cur, 2, 2, 1, 1, 1, 1);
         cur = ggml_conv_2d(ctx0, model.neck_conv4_w, cur, 2, 2, 1, 1, 1, 1);
 
-
-
         // multimodal projection
-        ggml_tensor * embeddings = ggml_transpose(ctx0,ggml_reshape_2d(ctx0,cur,256,1024));
+        ggml_tensor * embeddings = ggml_cont(ctx0, ggml_transpose(ctx0, ggml_reshape_2d(ctx0, cur, 256, 1024)));
 
-        embeddings               = ggml_mul_mat(ctx0, model.proj_lin_w, embeddings);
-        embeddings               = ggml_add_inplace(ctx0, embeddings, model.proj_lin_b);
+        embeddings = ggml_mul_mat(ctx0, model.proj_lin_w, embeddings);
+
+        embeddings = ggml_add_inplace(ctx0, embeddings, model.proj_lin_b);
 
         // build the graph
         ggml_build_forward_expand(gf, embeddings);
-        fprintf(stderr, "proj:[%lld %lld %lld %lld]\n",embeddings->ne[0], embeddings->ne[1], embeddings->ne[2], embeddings->ne[3]);
-        fflush(stderr);
         return gf;
     }
 
@@ -1782,12 +1778,14 @@ struct clip_graph {
         // LayerNorm2d
         // normalize along channel dimmension
         // TODO: better implementation
-        layer = ggml_permute(ctx0, ggml_norm(ctx0, ggml_cont(ctx0, ggml_permute(ctx0, layer, 1, 2, 0, 3)), eps), 2, 0,
-                             1, 3);
+        layer = ggml_cont(ctx0,ggml_permute(ctx0, ggml_norm(ctx0, ggml_cont(ctx0, ggml_permute(ctx0, layer, 1, 2, 0, 3)), eps), 2, 0,
+                             1, 3));
 
-        layer =
-            ggml_add(ctx0, ggml_mul(ctx0, ggml_repeat(ctx0, ggml_reshape_3d(ctx0, w, 1, 1, n_channels), layer), layer),
-                     ggml_repeat(ctx0, ggml_reshape_3d(ctx0, b, 1, 1, n_channels), layer));
+        layer = ggml_add(
+            ctx0,
+            ggml_mul(ctx0, ggml_cont(ctx0, ggml_repeat(ctx0, ggml_reshape_3d(ctx0, w, 1, 1, n_channels), layer)),
+                     layer),
+            ggml_cont(ctx0, ggml_repeat(ctx0, ggml_reshape_3d(ctx0, b, 1, 1, n_channels), layer)));
 
         return layer;
     }
@@ -1929,15 +1927,24 @@ struct clip_graph {
         ggml_tensor * k = ggml_permute(ctx0, k_cur, 0, 2, 1, 3);
         //cb(k, "k", il);
 
-        ggml_tensor * v = ggml_permute(ctx0, v_cur, 1, 2, 0, 3);
-        v               = ggml_cont(ctx0, v);
+        ggml_tensor * v     = ggml_permute(ctx0, v_cur, 1, 2, 0, 3);
+        v                   = ggml_cont(ctx0, v);
         //cb(k, "v", il);
+        // ggml_mul_mat
+        ggml_tensor * q_r   = ggml_reshape_4d(ctx0, q, d_head, W, H, n_head * B);
+        ggml_tensor * q_r_w = ggml_cont(ctx0, ggml_permute(ctx0, q_r, 0, 2, 1, 3));
+        ggml_tensor * r_w_r = ggml_mul_mat(ctx0, rel_w, q_r_w);
+        ggml_tensor * rw    = ggml_cont(ctx0, ggml_permute(ctx0, r_w_r, 0, 2, 1, 3));
+        rw                  = ggml_cont(ctx0, ggml_reshape_4d(ctx0, rw, rw->ne[0], 1, W * H, n_head * B));
+        ggml_tensor * rh    = ggml_mul_mat(ctx0, rel_h, ggml_cont(ctx0, q_r));
+        rh                  = ggml_cont(ctx0, ggml_reshape_4d(ctx0, rh, 1, rh->ne[0], W * H, n_head * B));
 
-        ggml_tensor * q_r = ggml_reshape_4d(ctx0, q, d_head, W, H, n_head * B);
-        ggml_tensor * rw  = ggml_cont(
-            ctx0, ggml_permute(ctx0, ggml_mul_mat(ctx0, rel_w, ggml_cont(ctx0, ggml_permute(ctx0, q_r, 0, 2, 1, 3))), 0,
-                                2, 1, 3));
-        ggml_tensor * rh = ggml_mul_mat(ctx0, rel_h, q_r);
+        ggml_tensor * attn_bias = ggml_new_tensor_4d(ctx0, rw->type, W, H, W * H, n_head * B);
+        // attn_bias               = ggml_set_zero(attn_bias);
+        attn_bias               = ggml_add(ctx0, attn_bias, rh);
+        attn_bias               = ggml_add(ctx0, attn_bias, rw);
+        attn_bias               = ggml_reshape_3d(ctx0, attn_bias, W * H, W * H, n_head * B);
+
         ggml_tensor * cur;
 
         // TODO @ngxson : support flash attention
@@ -1947,22 +1954,16 @@ struct clip_graph {
             // const auto n_kv     = k->ne[1]; // for flash attention
 
             ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
-            // kq = ggml_add_inplace(ctx0,kq,kq_b);
-            // F32 may not needed for vision encoders?
-            // ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
             kq               = ggml_scale_inplace(ctx0, kq, kq_scale);
             kq               = ggml_reshape_3d(ctx0, kq, n_tokens, n_tokens, n_head * B);
+            // kq               = ggml_add_rel_pos_inplace(ctx0, kq, rw, rh);
+            kq               = ggml_add_inplace(ctx0, kq, attn_bias);
+            kq               = ggml_soft_max_inplace(ctx0, kq);
 
-            kq = ggml_add_rel_pos_inplace(ctx0, kq, rw, rh);
-            // kq = ggml_soft_max_ext(ctx0, kq, nullptr, kq_scale, 0.0f);
-            kq = ggml_soft_max_inplace(ctx0, kq);
-
-
-            ggml_tensor * kqv =
-                ggml_mul_mat(ctx0, v, ggml_reshape_4d(ctx0, kq, n_tokens, n_tokens, n_head, B));
-            cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
-            cur = ggml_cont(ctx0,cur);
-            cur = ggml_reshape_4d(ctx0,cur,n_embd,W,H,B);
+            ggml_tensor * kqv = ggml_mul_mat(ctx0, v, ggml_reshape_4d(ctx0, kq, n_tokens, n_tokens, n_head, B));
+            cur               = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
+            cur               = ggml_cont(ctx0, cur);
+            cur               = ggml_reshape_4d(ctx0, cur, n_embd, W, H, B);
         }
 
         cb(cur, "kqv_out", il);
@@ -2355,6 +2356,9 @@ struct clip_model_loader {
                         hparams.ffn_op = FFN_GELU_ERF;
                         log_ffn_op     = "gelu_erf";  // temporary solution for logging
                     }
+                    break;
+                case PROJECTOR_TYPE_GOTVARY:
+                    hparams.image_size = 1024;
                     break;
                 default:
                     break;
@@ -3480,8 +3484,7 @@ bool clip_image_preprocess(struct clip_ctx * ctx, const clip_image_u8 * img, str
         res_imgs->grid_y = inst.grid_size.height;
         return true;
 
-    } else if (ctx->proj_type() == PROJECTOR_TYPE_QWEN2VL || ctx->proj_type() == PROJECTOR_TYPE_QWEN25VL ||
-               ctx->proj_type() == PROJECTOR_TYPE_GOTVARY) {
+    } else if (ctx->proj_type() == PROJECTOR_TYPE_QWEN2VL || ctx->proj_type() == PROJECTOR_TYPE_QWEN25VL) {
         clip_image_u8 resized;
         auto          patch_size = params.patch_size * 2;
         auto new_size = image_manipulation::calc_size_preserved_ratio(original_size, patch_size, params.image_size);
@@ -3493,6 +3496,16 @@ bool clip_image_preprocess(struct clip_ctx * ctx, const clip_image_u8 * img, str
         // res_imgs->data[0] = *res;
         res_imgs->entries.push_back(std::move(img_f32));
         return true;
+    } else if (ctx->proj_type() == PROJECTOR_TYPE_GOTVARY) {
+        clip_image_u8 resized;
+        image_manipulation::bicubic_resize(*img, resized, 1024, 1024);
+        clip_image_f32_ptr img_f32(clip_image_f32_init());
+        // clip_image_f32_ptr res(clip_image_f32_init());
+        normalize_image_u8_to_f32(resized, *img_f32, params.image_mean, params.image_std);
+        // res_imgs->data[0] = *res;
+        res_imgs->entries.push_back(std::move(img_f32));
+        return true;
+
     } else if (ctx->proj_type() == PROJECTOR_TYPE_GLM_EDGE || ctx->proj_type() == PROJECTOR_TYPE_GEMMA3 ||
                ctx->proj_type() == PROJECTOR_TYPE_IDEFICS3 ||
                ctx->proj_type() == PROJECTOR_TYPE_INTERNVL  // TODO @ngxson : support dynamic resolution
@@ -4156,6 +4169,7 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         case PROJECTOR_TYPE_INTERNVL:
         case PROJECTOR_TYPE_QWEN2A:
         case PROJECTOR_TYPE_ULTRAVOX:
+        case PROJECTOR_TYPE_GOTVARY:
             {
                 // do nothing
             }
