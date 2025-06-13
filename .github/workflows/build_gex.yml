@@ -31,6 +31,7 @@ jobs:
         run: choco install ninja -y
 
       - name: Configure CMake and build
+        shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -G "Ninja Multi-Config" -DCMAKE_BUILD_TYPE=Release   --preset ${{ env.BUILD_PRESET }} ${{ env.CMAKE_ARGS }} -B ./build-x64-windows-msvc+static-release
@@ -74,7 +75,8 @@ jobs:
         with:
           cuda_version: ${{ env.CUDA_VERSION }}
 
-      - name: Configure CMake  and Build  (with CUDA)
+      - name: Configure CMake and Build  (with CUDA)
+        shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B ./build-x64-windows-msvc+static-release -G "Ninja Multi-Config"  -DCMAKE_BUILD_TYPE=Release --preset ${{ env.BUILD_PRESET }} ${{ env.CMAKE_ARGS }} -DGGML_CUDA=ON -DGGML_CUDA_F16=ON 
