@@ -44,7 +44,8 @@ jobs:
 
       - name: Pack artifacts
         run: |
-          7z a libgex-cpu-bin.zip ./build-x64-windows-msvc+static-release/Release/bin/libgex.dll ./build-x64-windows-msvc+static-release/Release/bin/test_gex.exe
+          ls ./build-x64-windows-msvc+static-release
+          7z a libgex-cpu-bin.zip ./build-x64-windows-msvc+static-release/bin/libgex.dll ./build-x64-windows-msvc+static-release/bin/test_gex.exe
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -64,7 +65,7 @@ jobs:
       - name: Install ccache
         uses: hendrikmuhs/ccache-action@v1.2.16
         with:
-          key: windows-cpu
+          key: windows-cuda
           variant: ccache
           evict-old-files: 1d
 
@@ -91,12 +92,14 @@ jobs:
 
       - name: Pack artifacts (with CUDA)
         run: |
+          ls ./build-x64-windows-msvc+static-release
+          
           # Package the main binaries
-          7z a libgex-cuda-bin.zip ./build-x64-windows-msvc+static-release/Release/bin/libgex.dll ./build-x64-windows-msvc+static-release/Release/bin/test_gex.exe
+          7z a libgex-cuda-bin.zip ./build-x64-windows-msvc+static-release/bin/libgex.dll ./build-x64-windows-msvc+static-release/bin/test_gex.exe
 
           # Package CUDA runtime libraries
           $cuda_path = "${{ env.CUDA_PATH }}"
-          $dst = '.\build-x64-windows-msvc+static-release\Release\bin\cudart\'
+          $dst = '.\build-x64-windows-msvc+static-release\bin\cudart\'
           New-Item -ItemType Directory -Path $dst -Force
           robocopy "$cuda_path\bin" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
           robocopy "$cuda_path\lib" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
