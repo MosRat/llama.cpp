@@ -808,37 +808,37 @@ static void ggml_backend_sched_print_assignments(ggml_backend_sched_t sched, str
     for (int i = 0; i < graph->n_nodes; i++) {
         if (cur_split < sched->n_splits && i == sched->splits[cur_split].i_start) {
             ggml_backend_t split_backend = sched->backends[sched->splits[cur_split].backend_id];
-            GGML_LOG_DEBUG("\n## SPLIT #%d: %s # %d inputs", cur_split, ggml_backend_name(split_backend),
+            GGML_LOG_INFO("\n## SPLIT #%d: %s # %d inputs", cur_split, ggml_backend_name(split_backend),
                            sched->splits[cur_split].n_inputs);
             for (int j = 0; j < sched->splits[cur_split].n_inputs; j++) {
                 if (j == 0) {
-                    GGML_LOG_DEBUG(": ");
+                    GGML_LOG_INFO(": ");
                 }
-                GGML_LOG_DEBUG("[%s (%5.5s)] ", sched->splits[cur_split].inputs[j]->name,
+                GGML_LOG_INFO("[%s (%5.5s)] ", sched->splits[cur_split].inputs[j]->name,
                                fmt_size(ggml_nbytes(sched->splits[cur_split].inputs[j])));
             }
-            GGML_LOG_DEBUG("\n");
+            GGML_LOG_INFO("\n");
             cur_split++;
         }
         struct ggml_tensor * node = graph->nodes[i];
         if (ggml_is_view_op(node->op)) {
             continue;
         }
-        if (sched->debug > 1) {
+        if (sched->debug > 1 || true) {
             ggml_backend_t tensor_backend = ggml_backend_sched_get_tensor_backend(sched, node);
-            GGML_LOG_DEBUG("node #%3d (%10.10s): %20.20s (%5.5s) [%5.5s %8.8s]:", i, ggml_op_name(node->op), node->name,
+            GGML_LOG_INFO("node #%3d (%10.10s): %20.20s (%5.5s) [%5.5s %8.8s] {%d}:", i, ggml_op_name(node->op), node->name,
                            fmt_size(ggml_nbytes(node)), tensor_backend ? ggml_backend_name(tensor_backend) : "NULL",
-                           GET_CAUSE(node));
+                           GET_CAUSE(node),tensor_backend_id(node));
             for (int j = 0; j < GGML_MAX_SRC; j++) {
                 struct ggml_tensor * src = node->src[j];
                 if (src == NULL) {
                     continue;
                 }
                 ggml_backend_t src_backend = ggml_backend_sched_get_tensor_backend(sched, src);
-                GGML_LOG_DEBUG(" %20.20s (%5.5s) [%5.5s %8.8s]", src->name, fmt_size(ggml_nbytes(src)),
+                GGML_LOG_INFO(" %20.20s (%5.5s) [%5.5s %8.8s]", src->name, fmt_size(ggml_nbytes(src)),
                                src_backend ? ggml_backend_name(src_backend) : "NULL", GET_CAUSE(src));
             }
-            GGML_LOG_DEBUG("\n");
+            GGML_LOG_INFO("\n");
         }
     }
 }
@@ -1097,6 +1097,7 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
             }
         }
     }
+
     // pass 5: split graph, find tensors that need to be copied
     {
         int                               i_split = 0;
@@ -1122,8 +1123,7 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
 
             const int node_backend_id = tensor_backend_id(node);
 
-            assert(node_backend_id !=
-                   -1);  // all nodes should be assigned by now, this can happen if there is no CPU fallback
+            assert(node_backend_id != -1);  // all nodes should be assigned by now, this can happen if there is no CPU fallback
 
             // check if we should start a new split based on the sources of the current node
             bool need_new_split = false;

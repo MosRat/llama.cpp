@@ -26,15 +26,18 @@ struct clip_context_params {
     bool use_gpu;
     enum ggml_log_level verbosity;
 };
-
+struct clip_model_loader;
+void clip_model_loader_free(clip_model_loader * l_ptr);
 struct clip_init_result {
     struct clip_ctx * ctx_v; // vision context
     struct clip_ctx * ctx_a; // audio context
+    struct clip_model_loader* loader;
 };
 
 struct clip_init_result clip_init(const char * fname, struct clip_context_params ctx_params);
 
 void clip_free(struct clip_ctx * ctx);
+void clip_model_loader_reload(clip_ctx**ctx,clip_model_loader * l_ptr, struct clip_context_params ctx_params);
 
 size_t clip_embd_nbytes(const struct clip_ctx * ctx);
 size_t clip_embd_nbytes_by_img(const struct clip_ctx * ctx, int img_w, int img_h);

@@ -788,7 +788,6 @@ struct clip_graph {
         constexpr int64_t GOT_NORM_CHANS      = 256;
         constexpr int     GOT_VARY_WIN_SIZE   = 14;
 
-        constexpr int batch_size   = 1;
         constexpr int n_wa_pattern = 3;
 
         norm_type norm_t = NORM_TYPE_NORMAL;
@@ -1778,10 +1777,11 @@ struct clip_graph {
         // LayerNorm2d
         // normalize along channel dimmension
         // TODO: better implementation
-        layer = ggml_cont(ctx0,ggml_permute(ctx0, ggml_norm(ctx0, ggml_cont(ctx0, ggml_permute(ctx0, layer, 1, 2, 0, 3)), eps), 2, 0,
-                             1, 3));
+        layer = ggml_cont(
+            ctx0, ggml_permute(ctx0, ggml_norm_inplace(ctx0, ggml_cont(ctx0, ggml_permute(ctx0, layer, 1, 2, 0, 3)), eps), 2, 0,
+                               1, 3));
 
-        layer = ggml_add(
+        layer = ggml_add_inplace(
             ctx0,
             ggml_mul(ctx0, ggml_cont(ctx0, ggml_repeat(ctx0, ggml_reshape_3d(ctx0, w, 1, 1, n_channels), layer)),
                      layer),
@@ -1932,12 +1932,14 @@ struct clip_graph {
         //cb(k, "v", il);
         // ggml_mul_mat
         ggml_tensor * q_r   = ggml_reshape_4d(ctx0, q, d_head, W, H, n_head * B);
+        ggml_tensor * rh    = ggml_mul_mat(ctx0, rel_h, ggml_cont(ctx0, q_r));
+        rh                  = ggml_cont(ctx0, ggml_reshape_4d(ctx0, rh, 1, rh->ne[0], W * H, n_head * B));
+
+
         ggml_tensor * q_r_w = ggml_cont(ctx0, ggml_permute(ctx0, q_r, 0, 2, 1, 3));
         ggml_tensor * r_w_r = ggml_mul_mat(ctx0, rel_w, q_r_w);
         ggml_tensor * rw    = ggml_cont(ctx0, ggml_permute(ctx0, r_w_r, 0, 2, 1, 3));
         rw                  = ggml_cont(ctx0, ggml_reshape_4d(ctx0, rw, rw->ne[0], 1, W * H, n_head * B));
-        ggml_tensor * rh    = ggml_mul_mat(ctx0, rel_h, ggml_cont(ctx0, q_r));
-        rh                  = ggml_cont(ctx0, ggml_reshape_4d(ctx0, rh, 1, rh->ne[0], W * H, n_head * B));
 
         ggml_tensor * attn_bias = ggml_new_tensor_4d(ctx0, rw->type, W, H, W * H, n_head * B);
         // attn_bias               = ggml_set_zero(attn_bias);
@@ -1969,7 +1971,7 @@ struct clip_graph {
         cb(cur, "kqv_out", il);
         cur = ggml_mul_mat(ctx0, wo, cur);
 
-        cur = ggml_add(ctx0, cur, wo_b);
+        cur = ggml_add_inplace(ctx0, cur, wo_b);
         return cur;
     }
 
@@ -2842,11 +2844,13 @@ struct clip_model_loader {
 
 struct clip_init_result clip_init(const char * fname, struct clip_context_params ctx_params) {
     g_logger_state.verbosity_thold = ctx_params.verbosity;
-    clip_ctx * ctx_vision          = nullptr;
-    clip_ctx * ctx_audio           = nullptr;
+    clip_ctx *          ctx_vision = nullptr;
+    clip_ctx *          ctx_audio  = nullptr;
+    clip_model_loader * l_ptr      = nullptr;
 
     try {
-        clip_model_loader loader(fname);
+        l_ptr         = new clip_model_loader(fname);
+        auto & loader = *l_ptr;
 
         if (loader.has_vision) {
             ctx_vision = new clip_ctx(ctx_params);
@@ -2873,7 +2877,22 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
         return { nullptr, nullptr };
     }
 
-    return { ctx_vision, ctx_audio };
+    return {
+        ctx_vision,
+        ctx_audio,
+        l_ptr,
+    };
+}
+void clip_model_loader_reload(clip_ctx**ctx,clip_model_loader * l_ptr, struct clip_context_params ctx_params) {
+    auto new_ctx = new clip_ctx(ctx_params);
+    l_ptr->load_hparams(new_ctx->model, CLIP_MODALITY_VISION);
+    l_ptr->load_tensors(*new_ctx);
+    l_ptr->alloc_compute_meta(*new_ctx);
+    *ctx = new_ctx;
+}
+
+void clip_model_loader_free(clip_model_loader * l_ptr) {
+    delete l_ptr;
 }
 
 struct clip_image_size * clip_image_size_init() {

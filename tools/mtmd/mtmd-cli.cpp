@@ -209,6 +209,7 @@ static int eval_message(mtmd_cli_context & ctx, common_chat_msg & msg, bool add_
     // constexpr auto  padded_string = R"(<|vision_start|><__media__>)";
     fprintf(stderr, "formatted_chat.prompt:%s\n", formatted_chat.prompt.c_str());
     mtmd_input_text text;
+    // text.text          = formatted_chat.prompt.c_str();
     text.text          = padded_string;
     text.add_special   = add_bos;
     text.parse_special = true;
