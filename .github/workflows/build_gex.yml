@@ -96,7 +96,7 @@ jobs:
 
     strategy:
       matrix:
-        cuda: ['12.1'] # Specify desired CUDA version(s)
+        cuda: ['12.4'] # Specify desired CUDA version(s)
         # llama.cpp uses 12.4, you can adjust this.
 
     steps:
