@@ -67,5 +67,15 @@ install                (TARGETS ${TARGET} RUNTIME)
 target_link_libraries  (${TARGET} PRIVATE common mtmd Threads::Threads)
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
 
+set(GEX_PUBLIC_HEADERS
+        ${CMAKE_CURRENT_SOURCE_DIR}/gex.h
+)
+
+set_target_properties(gex
+        PROPERTIES
+        PUBLIC_HEADER "${GEX_PUBLIC_HEADERS}")
+
+install(TARGETS gex LIBRARY RUNTIME PUBLIC_HEADER)
+
 add_executable(test_gex test_gex.cpp)
 target_link_libraries(test_gex PRIVATE gex)

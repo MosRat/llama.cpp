@@ -1,0 +1,215 @@
+name: Build GEX
+
+on:
+  workflow_dispatch: # allows manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Common CMake options for both jobs
+  # The preset will handle CMAKE_MSVC_RUNTIME_LIBRARY and static/shared, but we can be explicit.
+  # BUILD_SHARED_LIBS=OFF is crucial for a static library.
+  # CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded is for /MT flag.
+  GEX_CMAKE_COMMON_OPTIONS: "-DBUILD_SHARED_LIBS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+  # Assuming your CMake uses this option to enable CUDA. Adjust if different.
+  GEX_CMAKE_CUDA_OPTION: "-DGEX_BUILD_WITH_CUDA=ON" # Placeholder - change if your CMake uses a different flag
+
+jobs:
+  build-windows-cpu:
+    name: Windows CPU Build (x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history might be needed if your preset relies on git versioning
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2.16
+        with:
+          key: windows-gex-cpu-x64
+          variant: ccache # sccache is also an option for MSVC
+          evict-old-files: 1d
+
+      - name: Install Ninja
+        run: choco install ninja
+        # Ninja is generally faster, even with MSVC compiler.
+        # The preset might define the generator. If it forces MSVC's own (e.g. nmake/msbuild),
+        # then Ninja won't be used unless you override with -G Ninja.
+
+      - name: Build GEX (CPU)
+        shell: cmd
+        run: |
+          echo "Setting up MSVC environment for x64..."
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+
+          echo "Configuring GEX (CPU)..."
+          cmake --preset x64-windows-msvc+static-release -B build -G Ninja ${{ env.GEX_CMAKE_COMMON_OPTIONS }}
+          REM If your preset already defines the generator, you might remove -G Ninja
+
+          echo "Building GEX (CPU)..."
+          cmake --build build --config Release --target gex test_gex -j %NUMBER_OF_PROCESSORS%
+          REM Or, if you want to build all default targets:
+          REM cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
+
+      - name: Prepare Artifact Staging Directory (CPU)
+        run: |
+          New-Item -ItemType Directory -Force -Path staging
+          New-Item -ItemType Directory -Force -Path staging/bin
+          New-Item -ItemType Directory -Force -Path staging/include
+
+          Copy-Item -Path "tools/mtmd/gex.h" -Destination "staging/include/"
+          # Assuming your CMake places outputs directly into build/bin due to your description.
+          # If they are in build/bin/Release, adjust the path.
+          # The static library could be gex.lib or libgex.lib depending on your add_library() command.
+          Copy-Item -Path "build/bin/gex.lib" -Destination "staging/bin/" -ErrorAction SilentlyContinue
+          Copy-Item -Path "build/bin/libgex.lib" -Destination "staging/bin/" -ErrorAction SilentlyContinue
+          Copy-Item -Path "build/bin/test_gex.exe" -Destination "staging/bin/"
+
+          # Verify files exist
+          Get-ChildItem -Path "staging" -Recurse
+          if (-not (Test-Path "staging/bin/test_gex.exe")) {
+            Write-Error "test_gex.exe not found in build/bin/"
+            exit 1
+          }
+          if (-not ( (Test-Path "staging/bin/gex.lib") -or (Test-Path "staging/bin/libgex.lib") ) ) {
+            Write-Error "gex.lib or libgex.lib not found in build/bin/"
+            exit 1
+          }
+
+      - name: Pack artifacts (CPU)
+        run: |
+          7z a gex-win-cpu-x64.zip .\staging\*
+
+      - name: Upload artifacts (CPU)
+        uses: actions/upload-artifact@v4
+        with:
+          name: gex-win-cpu-x64
+          path: gex-win-cpu-x64.zip
+
+  build-windows-cuda:
+    name: Windows CUDA Build (x64)
+    runs-on: windows-2022 # Often better for CUDA toolkit compatibility
+
+    strategy:
+      matrix:
+        cuda: ['12.1'] # Specify desired CUDA version(s)
+        # llama.cpp uses 12.4, you can adjust this.
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2.16
+        with:
+          key: windows-gex-cuda-${{ matrix.cuda }}-x64
+          variant: ccache
+          evict-old-files: 1d
+
+      - name: Install Cuda Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.11 # A community action, or use NVIDIA's official methods if preferred
+        with:
+          cuda: '${{ matrix.cuda }}'
+          # default is ['nvcc', 'cublas', 'cudart'] - ensure this covers your needs
+          # components: 'compiler,cudart,nvml,cublas,nvtx,curand,cusolver,cusparse,cufft,npp,nvjpeg,nvdec, لپopticalflow,nvblas' for full install
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Build GEX (CUDA)
+        shell: cmd
+        run: |
+          echo "Setting up MSVC environment for x64..."
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+
+          echo "Verifying nvcc..."
+          nvcc --version
+
+          echo "Configuring GEX (CUDA)..."
+          cmake --preset x64-windows-msvc+static-release -B build -G Ninja ${{ env.GEX_CMAKE_COMMON_OPTIONS }} ${{ env.GEX_CMAKE_CUDA_OPTION }}
+          REM If your preset already defines the generator, you might remove -G Ninja
+
+          echo "Building GEX (CUDA)..."
+          cmake --build build --config Release --target gex test_gex -j %NUMBER_OF_PROCESSORS%
+          REM Or, if you want to build all default targets:
+          REM cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
+
+      - name: Prepare Artifact Staging Directory (CUDA)
+        run: |
+          New-Item -ItemType Directory -Force -Path staging
+          New-Item -ItemType Directory -Force -Path staging/bin
+          New-Item -ItemType Directory -Force -Path staging/include
+
+          Copy-Item -Path "tools/mtmd/gex.h" -Destination "staging/include/"
+          # Assuming your CMake places outputs directly into build/bin.
+          Copy-Item -Path "build/bin/gex.lib" -Destination "staging/bin/" -ErrorAction SilentlyContinue
+          Copy-Item -Path "build/bin/libgex.lib" -Destination "staging/bin/" -ErrorAction SilentlyContinue
+          Copy-Item -Path "build/bin/test_gex.exe" -Destination "staging/bin/"
+
+          # Verify files exist
+          Get-ChildItem -Path "staging" -Recurse
+          if (-not (Test-Path "staging/bin/test_gex.exe")) {
+            Write-Error "test_gex.exe not found in build/bin/"
+            exit 1
+          }
+          if (-not ( (Test-Path "staging/bin/gex.lib") -or (Test-Path "staging/bin/libgex.lib") ) ) {
+            Write-Error "gex.lib or libgex.lib not found in build/bin/"
+            exit 1
+          }
+
+      - name: Pack artifacts (CUDA)
+        run: |
+          7z a gex-win-cuda-${{ matrix.cuda }}-x64.zip .\staging\*
+
+      - name: Upload artifacts (CUDA)
+        uses: actions/upload-artifact@v4
+        with:
+          name: gex-win-cuda-${{ matrix.cuda }}-x64
+          path: gex-win-cuda-${{ matrix.cuda }}-x64.zip
+
+      - name: Copy and pack Cuda runtime
+        # This part is adapted from the llama.cpp workflow
+        # It assumes CUDA_PATH is set by the cuda-toolkit action
+        # Adjust DLL names if your gex library depends on other CUDA libs (e.g. cuBLAS, cuDNN etc.)
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "CUDA_PATH: $env:CUDA_PATH"
+          $dst = '.\cudart_runtime_libs\'
+          New-Item -ItemType Directory -Force -Path $dst
+          
+          # Common runtime DLLs. Add others if gex links against them (e.g. cublas64_*.dll)
+          $runtime_dlls = @(
+            "cudart64_*.dll" # CUDA Runtime
+            # "cublas64_*.dll", # Basic Linear Algebra Subprograms
+            # "cublasLt64_*.dll" # Lightweight cuBLAS
+            # Add other DLLs like cufft, cusparse, cusolver, nvjpeg, npp* etc. if needed
+          )
+
+          foreach ($dll_pattern in $runtime_dlls) {
+            Get-ChildItem -Path "${env:CUDA_PATH}\bin" -Filter $dll_pattern | Copy-Item -Destination $dst -Force -ErrorAction SilentlyContinue
+          }
+          
+          # Some libraries might also be in lib path (less common for runtime deployment but good to check)
+          # foreach ($dll_pattern in $runtime_dlls) {
+          #   Get-ChildItem -Path "${env:CUDA_PATH}\lib\x64" -Filter $dll_pattern | Copy-Item -Destination $dst -Force -ErrorAction SilentlyContinue
+          # }
+
+          Get-ChildItem -Path $dst # List copied files for verification
+          if ((Get-ChildItem -Path $dst).Count -eq 0) {
+            Write-Warning "No CUDA runtime DLLs were copied. Check CUDA_PATH and DLL names."
+            # Depending on strictness, you might want to `exit 1` here
+          }
+          
+          7z a cudart-gex-win-cuda-${{ matrix.cuda }}-x64.zip "$($dst)*"
+
+      - name: Upload Cuda runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: cudart-gex-win-cuda-${{ matrix.cuda }}-x64
+          path: cudart-gex-win-cuda-${{ matrix.cuda }}-x64.zip
