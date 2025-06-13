@@ -25,11 +25,11 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake  --DCMAKE_BUILD_TYPE=Release --preset ${{ env.BUILD_PRESET }} ${{ env.CMAKE_ARGS }} -B ./build-x64-windows-msvc+static-release
+          cmake   --preset ${{ env.BUILD_PRESET }} ${{ env.CMAKE_ARGS }} -B ./build-x64-windows-msvc+static-release
 
       - name: Build
         run: |
-          cmake  --build --target gex test_gex 
+          cmake  --build --target gex test_gex  --DCMAKE_BUILD_TYPE=Release
 
       - name: Pack artifacts
         run: |
@@ -60,11 +60,11 @@ jobs:
 
       - name: Configure CMake (with CUDA)
         run: |
-          cmake  --DCMAKE_BUILD_TYPE=Release --preset ${{ env.BUILD_PRESET }} ${{ env.CMAKE_ARGS }} -DGGML_CUDA=ON -DGGML_CUDA_F16=ON -B ./build-x64-windows-msvc+static-release
+          cmake  --preset ${{ env.BUILD_PRESET }} ${{ env.CMAKE_ARGS }} -DGGML_CUDA=ON -DGGML_CUDA_F16=ON -B ./build-x64-windows-msvc+static-release
 
       - name: Build (with CUDA)
         run: |
-          cmake --build --target gex test_gex
+          cmake --build --target gex test_gex --DCMAKE_BUILD_TYPE=Release
 
       - name: Pack artifacts (with CUDA)
         run: |
