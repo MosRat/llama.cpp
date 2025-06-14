@@ -10,7 +10,7 @@
 int main() {
     constexpr auto model_path = R"(D:\whl\Desktop\Gext_Pt1-596M-Q4_K_M.gguf)";
     constexpr auto mm_path    = R"(D:\whl\Desktop\mmproj-gext_pt1.gguf)";
-    constexpr auto img_path   = R"(D:\whl\Desktop\test1.png)";
+    constexpr auto img_path   = R"(D:\whl\Desktop\test.png)";
 
     auto * ctx = gex_init_default(model_path, mm_path);
     for (int i = 0; i < 5; i++) {

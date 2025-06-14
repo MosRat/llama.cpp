@@ -34,7 +34,6 @@ gex_error get_last_error() {
 struct gex_ctx_internal {
     mtmd::context_ptr    ctx_vision;
     common_init_result   llama_init;
-    llama_context_params llama_params;
 
     llama_model *       model;
     llama_context *     lctx;
@@ -157,7 +156,6 @@ gex_context init_ctx(gex_ctx_internal * ctx, common_params params, const char * 
     ctx->llama_init = common_init_from_params(params);
     common_init();
 
-    ctx->llama_params = common_context_params_to_llama(params);
     ctx->lctx         = ctx->llama_init.context.get();
     ctx->model        = ctx->llama_init.model.get();
     ctx->n_gen        = 512;
@@ -199,7 +197,7 @@ gex_context gex_init_default(const char * model_path, const char * mmproj_path) 
     params.model.path          = model_path;
     params.mmproj.path         = mmproj_path;
     params.mmproj_use_gpu      = use_gpu;
-    params.cpuparams.n_threads = std::thread::hardware_concurrency();
+    params.cpuparams.n_threads = std::max(static_cast<int>(std::thread::hardware_concurrency()),8);
     params.n_gpu_layers        = use_gpu ? 99 : 0;
     params.n_ctx               = 4096;
     // params.n_batch             = 32;
